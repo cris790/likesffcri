@@ -17,7 +17,7 @@ app = Flask(__name__)
 def load_tokens(server_name):
     try:
         # Link direto para o JSON BR
-        url = "https://pastebin.com/raw/Z3dJ3qVU/token_br.json"
+        url = "https://pastebin.com/raw/Z3dJ3qVU"
         
         response = requests.get(url)
         response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
