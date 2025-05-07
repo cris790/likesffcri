@@ -101,7 +101,7 @@ async def get_account_info(uid, session):
             return None
 
 async def get_tokens(session):
-    url = 'http://164.92.134.31:5003/token'
+    url = 'https://token-one-jade.vercel.app/token'
     async with session.get(url) as response:
         if response.status == 200:
             tokens = await response.json()  # تحويل النتيجة إلى JSON
