@@ -93,7 +93,7 @@ async def like(id, session, token):
         }
 
 async def get_account_info(uid, session):
-    info_url = f'https://token-one-jade.vercel.app/{uid}'
+    info_url = f'https://infoff-beta.vercel.app/{uid}'
     async with session.get(info_url) as response:
         if response.status == 200:
             return await response.json()
