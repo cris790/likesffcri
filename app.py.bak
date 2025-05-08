@@ -93,7 +93,7 @@ async def like(id, session, token):
         }
 
 async def get_account_info(uid, session):
-    info_url = f'http://164.92.134.31:5002/{uid}'
+    info_url = f'https://be632ff2-f7d3-4e54-a2ab-a52114671f79-00-1ruiod791seez.kirk.replit.dev/{uid}'
     async with session.get(info_url) as response:
         if response.status == 200:
             return await response.json()
@@ -101,7 +101,7 @@ async def get_account_info(uid, session):
             return None
 
 async def get_tokens(session):
-    url = 'http://164.92.134.31:5003/token'
+    url = 'https://4fe55c0a-0b3c-4b8c-8ba4-5fc507bf73f8-00-1ljq6c1eal8zy.janeway.replit.dev/token'
     async with session.get(url) as response:
         if response.status == 200:
             tokens = await response.json()  # تحويل النتيجة إلى JSON
