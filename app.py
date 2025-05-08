@@ -1,20 +1,28 @@
 import asyncio
 import aiohttp
+import os
 from flask import Flask, request, jsonify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import binascii
-from secret import *
 import uid_generator_pb2
 import time
 from datetime import datetime
-import random
 
 app = Flask(__name__)
 
-# تخزين المفاتيح هنا
+# Obter chaves de variáveis de ambiente
+AES_KEY = os.getenv('AES_KEY')
+AES_IV = os.getenv('AES_IV')
+
+# Verificar se as chaves estão definidas
+if not AES_KEY or not AES_IV:
+    raise ValueError("AES_KEY and AES_IV must be set as environment variables")
+
+# Armazenar chaves da API
 api_keys = set()
 
+# Rastrear o tempo do último like
 last_like_time = {}
 
 def create_protobuf(saturn_, garena):
@@ -34,13 +42,13 @@ def encrypt_aes(hex_data, key, iv):
     encrypted_data = cipher.encrypt(padded_data)
     return binascii.hexlify(encrypted_data).decode()
 
-# إدارة المفاتيح
+# Gerenciamento de chaves
 @app.route('/make_key', methods=['GET'])
 def make_key():
     key = request.args.get('key')
     if not key:
         return jsonify({'error': 'Missing key parameter'}), 400
-    api_keys.add(key)  # إضافة المفتاح للمجموعة
+    api_keys.add(key)
     return jsonify({'message': 'Key added successfully', 'key': key}), 200
 
 @app.route('/del_key', methods=['GET'])
@@ -51,8 +59,7 @@ def del_key():
     if key in api_keys:
         api_keys.remove(key)
         return jsonify({'message': 'Key deleted successfully', 'key': key}), 200
-    else:
-        return jsonify({'error': 'Key not found'}), 404
+    return jsonify({'error': 'Key not found'}), 404
 
 @app.route('/del_all_keys', methods=['GET'])
 def del_all_keys():
@@ -63,11 +70,9 @@ def del_all_keys():
 def all_keys():
     return jsonify({'keys': list(api_keys)}), 200
 
-# التحقق من صحة المفتاح
 def verify_key(key):
     return key in api_keys
 
-# دالة الإعجاب
 async def like(id, session, token):
     like_url = 'https://clientbp.ggblueshark.com/LikeProfile'
     headers = {
@@ -93,98 +98,93 @@ async def like(id, session, token):
         }
 
 async def get_account_info(uid, session):
-    info_url = f'https://be632ff2-f7d3-4e54-a2ab-a52114671f79-00-1ruiod791seez.kirk.replit.dev/{uid}'
+    info_url = f'http://164.92.134.31:5002/{uid}'
     async with session.get(info_url) as response:
         if response.status == 200:
             return await response.json()
-        else:
-            return None
+        return None
 
 async def get_tokens(session):
-    url = 'https://4fe55c0a-0b3c-4b8c-8ba4-5fc507bf73f8-00-1ljq6c1eal8zy.janeway.replit.dev/token'
+    url = 'http://164.92.134.31:5003/token'
     async with session.get(url) as response:
         if response.status == 200:
-            tokens = await response.json()  # تحويل النتيجة إلى JSON
-            token_list = tokens.get('tokens', [])  # الحصول على قائمة tokens
-            return token_list[:100]  # إرجاع أول 99 توكن فقط
-        else:
-            return []  # إرجاع قائمة فارغة في حالة فشل الطلب
+            tokens = await response.json()
+            token_list = tokens.get('tokens', [])
+            return token_list[:100]
+        return []
 
 async def sendlike(uid, count=1):
-    saturn_ = int(uid)
-    garena = 1
-    protobuf_data = create_protobuf(saturn_, garena)
-    hex_data = protobuf_to_hex(protobuf_data)
-    aes_key = key
-    aes_iv = iv
-    id = encrypt_aes(hex_data, aes_key, aes_iv)
+    try:
+        saturn_ = int(uid)
+        garena = 1
+        protobuf_data = create_protobuf(saturn_, garena)
+        hex_data = protobuf_to_hex(protobuf_data)
+        id = encrypt_aes(hex_data, AES_KEY, AES_IV)
 
-    start_time = time.time()  # بداية المراقبة للوقت
+        start_time = time.time()
 
-    # تحقق مما إذا كانت قد مرّت 24 ساعة على آخر لايك
-    current_time = datetime.now()
-    last_time = last_like_time.get(uid)
-
-    async with aiohttp.ClientSession() as session:
-        tokens = await get_tokens(session)  # الحصول على قائمة tokens (أول 99 توكن)
-
-        if not tokens:
-            return jsonify({"error": "No tokens available"}), 500
-
-        # جلب معلومات الحساب قبل إضافة الإعجابات
-        account_info_before = await get_account_info(uid, session)
-        if not account_info_before:
-            return jsonify({"error": "Unable to fetch account info before sending likes"}), 500
-
-        likes_before = account_info_before['basicinfo'][0]['likes']  # الإعجابات قبل
-
-        # إرسال الإعجابات
-        tasks = [like(id, session, token) for token in tokens[:count]]  # إرسال عدد محدد من الإعجابات
-        results = await asyncio.gather(*tasks)
-
-        # جلب معلومات الحساب بعد إضافة الإعجابات
-        account_info_after = await get_account_info(uid, session)
-        if not account_info_after:
-            return jsonify({"error": "Unable to fetch account info after sending likes"}), 500
-
-        likes_after = account_info_after['basicinfo'][0]['likes']  # الإعجابات بعد
-
-        # حساب الإعجابات المضافة فعلياً
-        likes_added = likes_after - likes_before
-        failed_likes = sum(1 for result in results if result['status_code'] != 200)  # عدد الإعجابات التي فشلت
-
-        end_time = time.time()  # نهاية المراقبة للوقت
-        elapsed_time = end_time - start_time 
-        
+        current_time = datetime.now()
         last_like_time[uid] = current_time
 
-        return jsonify({
-            'uid': uid,
-            'name': account_info_after['basicinfo'][0].get('username', 'Unknown'),
-            'level': account_info_after['basicinfo'][0].get('level', 'N/A'),
-            'likes_before': likes_before,
-            'likes_after': likes_after,
-            'likes_added': likes_added,
-            'failed_likes': failed_likes,
-            'region': account_info_after['basicinfo'][0].get('region', 'Unknown')
-        }), 200
+        async with aiohttp.ClientSession() as session:
+            tokens = await get_tokens(session)
+            if not tokens:
+                return jsonify({"error": "No tokens available"}), 500
+
+            account_info_before = await get_account_info(uid, session)
+            if not account_info_before:
+                return jsonify({"error": "Unable to fetch account info before sending likes"}), 500
+
+            likes_before = account_info_before['basicinfo'][0]['likes']
+
+            tasks = [like(id, session, token) for token in tokens[:count]]
+            results = await asyncio.gather(*tasks)
+
+            account_info_after = await get_account_info(uid, session)
+            if not account_info_after:
+                return jsonify({"error": "Unable to fetch account info after sending likes"}), 500
+
+            likes_after = account_info_after['basicinfo'][0]['likes']
+            likes_added = likes_after - likes_before
+            failed_likes = sum(1 for result in results if result['status_code'] != 200)
+
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+
+            return jsonify({
+                'uid': uid,
+                'name': account_info_after['basicinfo'][0].get('username', 'Unknown'),
+                'level': account_info_after['basicinfo'][0].get('level', 'N/A'),
+                'likes_before': likes_before,
+                'likes_after': likes_after,
+                'likes_added': likes_added,
+                'failed_likes': failed_likes,
+                'region': account_info_after['basicinfo'][0].get('region', 'Unknown'),
+                'elapsed_time': elapsed_time
+            }), 200
+    except ValueError as e:
+        return jsonify({'error': 'Invalid UID format'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/like', methods=['GET'])
 def like_endpoint():
     try:
         uid = request.args.get('uid')
         api_key = request.args.get('key')
-        count = int(request.args.get('count', 99))  # عدد الإعجابات، الافتراضي 1
+        count = int(request.args.get('count', 99))
+
         if not uid or not api_key:
             return jsonify({'error': 'Missing uid or key parameter'}), 400
-
-        # التحقق من صحة المفتاح
+        if not uid.isdigit():
+            return jsonify({'error': 'UID must be a valid number'}), 400
         if not verify_key(api_key):
             return jsonify({'error': 'Invalid API key'}), 403
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(sendlike(uid, count))
+        # Usar asyncio.run para executar a função assíncrona
+        return asyncio.run(sendlike(uid, count))
+    except ValueError as e:
+        return jsonify({'error': 'Invalid count parameter'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
