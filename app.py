@@ -100,7 +100,7 @@ async def send_multiple_requests(uid, server_name, url):
             return None, 0
 
         # Enviar exatamente 99 requests
-        for i in range(99):
+        for i in range(100):
             token = tokens[i % len(tokens)]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
 
