@@ -11,17 +11,23 @@ import like_pb2
 import like_count_pb2
 import uid_generator_pb2
 from google.protobuf.message import DecodeError
+import time
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 app = Flask(__name__)
+
+# Dicionário para armazenar os tempos dos últimos likes (uid -> último like timestamp)
+last_like_times = defaultdict(dict)
 
 def load_tokens(server_name):
     try:
         # Link direto para o JSON BR
         url = "https://pastebin.com/raw/8qmW8D5f"
-        
+
         response = requests.get(url)
         response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
-        
+
         tokens = response.json()  # Converte diretamente para dict/list
         return tokens
 
@@ -77,28 +83,34 @@ async def send_request(encrypted_uid, token, url):
 
 async def send_multiple_requests(uid, server_name, url):
     try:
+        start_time = time.time()
         region = server_name
         protobuf_message = create_protobuf_message(uid, region)
         if protobuf_message is None:
             app.logger.error("Failed to create protobuf message.")
-            return None
+            return None, 0
         encrypted_uid = encrypt_message(protobuf_message)
         if encrypted_uid is None:
             app.logger.error("Encryption failed.")
-            return None
+            return None, 0
         tasks = []
         tokens = load_tokens(server_name)
         if tokens is None:
             app.logger.error("Failed to load tokens.")
-            return None
-        for i in range(100):
+            return None, 0
+
+        # Enviar exatamente 99 requests
+        for i in range(99):
             token = tokens[i % len(tokens)]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return results
+        end_time = time.time()
+        execution_time = end_time - start_time
+        return results, execution_time
     except Exception as e:
         app.logger.error(f"Exception in send_multiple_requests: {e}")
-        return None
+        return None, 0
 
 def create_protobuf(uid):
     try:
@@ -160,79 +172,140 @@ def decode_protobuf(binary):
         app.logger.error(f"Unexpected error during protobuf decoding: {e}")
         return None
 
+def can_send_likes(uid, server_name):
+    """Verifica se o usuário pode enviar likes novamente"""
+    if uid not in last_like_times or server_name not in last_like_times[uid]:
+        return True
+
+    last_time = last_like_times[uid][server_name]
+    time_passed = datetime.now() - last_time
+    return time_passed >= timedelta(hours=24)
+
+def get_remaining_time(uid, server_name):
+    """Retorna o tempo restante até poder enviar likes novamente"""
+    if uid not in last_like_times or server_name not in last_like_times[uid]:
+        return timedelta(0)
+
+    last_time = last_like_times[uid][server_name]
+    next_available = last_time + timedelta(hours=24)
+    remaining = next_available - datetime.now()
+    return remaining if remaining > timedelta(0) else timedelta(0)
+
 @app.route('/like', methods=['GET'])
 def handle_requests():
     uid = request.args.get("uid")
     server_name = request.args.get("server_name", "").upper()
     if not uid or not server_name:
-        return jsonify({"error": "UID and server_name are required"}), 400
+        return jsonify({
+            "success": False,
+            "error": "UID and server_name are required"
+        }), 400
 
     try:
-        def process_request():
-            tokens = load_tokens(server_name)
-            if tokens is None:
-                raise Exception("Failed to load tokens.")
-            token = tokens[0]['token']
-            encrypted_uid = enc(uid)
-            if encrypted_uid is None:
-                raise Exception("Encryption of UID failed.")
+        # Verificar se pode enviar likes
+        if not can_send_likes(uid, server_name):
+            remaining = get_remaining_time(uid, server_name)
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes = remainder // 60
+            return jsonify({
+                "success": False,
+                "error": f"Você só pode enviar likes novamente após 24 horas. Tempo restante: {hours}h {minutes}m",
+                "remaining_time": {
+                    "hours": hours,
+                    "minutes": minutes
+                }
+            }), 429
 
-            # الحصول على بيانات اللاعب قبل تنفيذ عملية الإعجاب
-            before = make_request(encrypted_uid, server_name, token)
-            if before is None:
-                raise Exception("Failed to retrieve initial player info.")
-            try:
-                jsone = MessageToJson(before)
-            except Exception as e:
-                raise Exception(f"Error converting 'before' protobuf to JSON: {e}")
-            data_before = json.loads(jsone)
-            before_like = data_before.get('AccountInfo', {}).get('Likes', 0)
-            try:
-                before_like = int(before_like)
-            except Exception:
-                before_like = 0
-            app.logger.info(f"Likes before command: {before_like}")
+        start_time = time.time()
+        tokens = load_tokens(server_name)
+        if tokens is None:
+            raise Exception("Failed to load tokens.")
 
-            # تحديد رابط الإعجاب حسب اسم السيرفر
-            if server_name == "IND":
-                url = "https://client.ind.freefiremobile.com/LikeProfile"
-            elif server_name in {"BR", "US", "SAC", "NA"}:
-                url = "https://client.us.freefiremobile.com/LikeProfile"
-            else:
-                url = "https://clientbp.ggblueshark.com/LikeProfile"
+        token = tokens[0]['token']
+        encrypted_uid = enc(uid)
+        if encrypted_uid is None:
+            raise Exception("Encryption of UID failed.")
 
-            # إرسال الطلبات بشكل غير متزامن
-            asyncio.run(send_multiple_requests(uid, server_name, url))
+        # Get player info before sending likes
+        before = make_request(encrypted_uid, server_name, token)
+        if before is None:
+            raise Exception("Failed to retrieve initial player info.")
 
-            # الحصول على بيانات اللاعب بعد تنفيذ عملية الإعجاب
-            after = make_request(encrypted_uid, server_name, token)
-            if after is None:
-                raise Exception("Failed to retrieve player info after like requests.")
-            try:
-                jsone_after = MessageToJson(after)
-            except Exception as e:
-                raise Exception(f"Error converting 'after' protobuf to JSON: {e}")
-            data_after = json.loads(jsone_after)
-            after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
-            player_uid = int(data_after.get('AccountInfo', {}).get('UID', 0))
-            player_name = str(data_after.get('AccountInfo', {}).get('PlayerNickname', ''))
-            like_given = after_like - before_like
-            status = 1 if like_given != 0 else 2
-            result = {
-                "LikesGivenByAPI": like_given,
-                "LikesafterCommand": after_like,
-                "LikesbeforeCommand": before_like,
-                "PlayerNickname": player_name,
-                "UID": player_uid,
-                "status": status
-            }
-            return result
+        try:
+            jsone = MessageToJson(before)
+        except Exception as e:
+            raise Exception(f"Error converting 'before' protobuf to JSON: {e}")
 
-        result = process_request()
-        return jsonify(result)
+        data_before = json.loads(jsone)
+        before_like = data_before.get('AccountInfo', {}).get('Likes', 0)
+        player_name = data_before.get('AccountInfo', {}).get('PlayerNickname', 'Unknown')
+        player_uid = data_before.get('AccountInfo', {}).get('UID', uid)
+
+        try:
+            before_like = int(before_like)
+        except Exception:
+            before_like = 0
+
+        # Determine the like endpoint based on server
+        if server_name == "IND":
+            url = "https://client.ind.freefiremobile.com/LikeProfile"
+        elif server_name in {"BR", "US", "SAC", "NA"}:
+            url = "https://client.us.freefiremobile.com/LikeProfile"
+        else:
+            url = "https://clientbp.ggblueshark.com/LikeProfile"
+
+        # Send exactly 99 like requests
+        results, execution_time = asyncio.run(send_multiple_requests(uid, server_name, url))
+
+        # Registrar o momento em que os likes foram enviados
+        last_like_times[uid][server_name] = datetime.now()
+
+        # Get player info after sending likes
+        after = make_request(encrypted_uid, server_name, token)
+        if after is None:
+            raise Exception("Failed to retrieve player info after like requests.")
+
+        try:
+            jsone_after = MessageToJson(after)
+        except Exception as e:
+            raise Exception(f"Error converting 'after' protobuf to JSON: {e}")
+
+        data_after = json.loads(jsone_after)
+        after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
+        total_likes_sent = after_like - before_like
+
+        # Calcular o tempo restante até poder enviar likes novamente
+        remaining_time = get_remaining_time(uid, server_name)
+        hours, remainder = divmod(remaining_time.seconds, 3600)
+        minutes = remainder // 60
+
+        # Determine if likes were sent successfully
+        success_status = total_likes_sent > 0
+
+        # Prepare the response in the requested format
+        response = {
+            "success": success_status,
+            "message": f"{total_likes_sent} likes adicionado com sucesso" if success_status else "Nenhum like foi enviado",
+            "PlayerName": player_name,
+            "UID": str(player_uid),
+            "Region": server_name,
+            "Before Like": str(before_like),
+            "Likes After": str(after_like),
+            "Total likes sent": total_likes_sent,
+            "Total Estimated Time": f"{hours} horas e {minutes} minutos",
+            "Reusable": "Voce pode enviar curtidas novamente apos 24 horas para este UID.",
+            "Time Takes": f"{execution_time:.2f} seconds",
+            "last_like_time": last_like_times[uid][server_name].isoformat()
+        }
+
+        return jsonify(response)
+
     except Exception as e:
         app.logger.error(f"Error processing request: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
