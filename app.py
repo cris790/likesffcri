@@ -23,7 +23,7 @@ last_like_times = defaultdict(dict)
 def load_tokens(server_name):
     try:
         # Link direto para o JSON BR
-        url = "https://pastebin.com/raw/8qmW8D5f"
+        url = "https://pastebin.com/raw/CWks5CQX"
 
         response = requests.get(url)
         response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
