@@ -14,25 +14,23 @@ from google.protobuf.message import DecodeError
 import time
 from datetime import datetime, timedelta
 from collections import defaultdict
+import threading
 
 app = Flask(__name__)
 
-# Dicionário para armazenar os tempos dos últimos likes (uid -> último like timestamp)
+# Dicionário persistente para armazenar os tempos dos últimos likes (uid -> último like timestamp)
+# Agora usando um lock para thread safety
 last_like_times = defaultdict(dict)
+like_lock = threading.Lock()
 
 def load_tokens(server_name):
     try:
-        # Link direto para o JSON BR
         url = "https://6eb59e55-8444-4bbf-a595-a70c53671ff3-00-3tqutntxcpuq7.spock.replit.dev/token"
-
         response = requests.get(url)
-        response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
-
-        tokens = response.json()  # Converte diretamente para dict/list
-        return tokens
-
+        response.raise_for_status()
+        return response.json()
     except Exception as e:
-        print(f"Error loading tokens for server {server_name}: {e}")
+        app.logger.error(f"Error loading tokens for server {server_name}: {e}")
         return None
 
 def encrypt_message(plaintext):
@@ -99,7 +97,6 @@ async def send_multiple_requests(uid, server_name, url):
             app.logger.error("Failed to load tokens.")
             return None, 0
 
-        # Enviar exatamente 99 requests
         for i in range(100):
             token = tokens[i % len(tokens)]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
@@ -153,8 +150,6 @@ def make_request(encrypt, server_name, token):
         hex_data = response.content.hex()
         binary = bytes.fromhex(hex_data)
         decode = decode_protobuf(binary)
-        if decode is None:
-            app.logger.error("Protobuf decoding returned None.")
         return decode
     except Exception as e:
         app.logger.error(f"Error in make_request: {e}")
@@ -173,23 +168,30 @@ def decode_protobuf(binary):
         return None
 
 def can_send_likes(uid, server_name):
-    """Verifica se o usuário pode enviar likes novamente"""
-    if uid not in last_like_times or server_name not in last_like_times[uid]:
-        return True
+    """Verifica se o usuário pode enviar likes novamente com thread safety"""
+    with like_lock:
+        if uid not in last_like_times or server_name not in last_like_times[uid]:
+            return True
 
-    last_time = last_like_times[uid][server_name]
-    time_passed = datetime.now() - last_time
-    return time_passed >= timedelta(hours=24)
+        last_time = last_like_times[uid][server_name]
+        time_passed = datetime.now() - last_time
+        return time_passed >= timedelta(hours=24)
 
 def get_remaining_time(uid, server_name):
-    """Retorna o tempo restante até poder enviar likes novamente"""
-    if uid not in last_like_times or server_name not in last_like_times[uid]:
-        return timedelta(0)
+    """Retorna o tempo restante até poder enviar likes novamente com thread safety"""
+    with like_lock:
+        if uid not in last_like_times or server_name not in last_like_times[uid]:
+            return timedelta(0)
 
-    last_time = last_like_times[uid][server_name]
-    next_available = last_time + timedelta(hours=24)
-    remaining = next_available - datetime.now()
-    return remaining if remaining > timedelta(0) else timedelta(0)
+        last_time = last_like_times[uid][server_name]
+        next_available = last_time + timedelta(hours=24)
+        remaining = next_available - datetime.now()
+        return remaining if remaining > timedelta(0) else timedelta(0)
+
+def update_last_like_time(uid, server_name):
+    """Atualiza o tempo do último like com thread safety"""
+    with like_lock:
+        last_like_times[uid][server_name] = datetime.now()
 
 @app.route('/like', methods=['GET'])
 def handle_requests():
@@ -257,8 +259,8 @@ def handle_requests():
         # Send exactly 99 like requests
         results, execution_time = asyncio.run(send_multiple_requests(uid, server_name, url))
 
-        # Registrar o momento em que os likes foram enviados
-        last_like_times[uid][server_name] = datetime.now()
+        # Atualizar o momento em que os likes foram enviados (com thread safety)
+        update_last_like_time(uid, server_name)
 
         # Get player info after sending likes
         after = make_request(encrypted_uid, server_name, token)
@@ -282,7 +284,7 @@ def handle_requests():
         # Determine if likes were sent successfully
         success_status = total_likes_sent > 0
 
-        # Prepare the response in the requested format
+        # Prepare the response
         response = {
             "success": success_status,
             "message": f"{total_likes_sent} likes adicionado com sucesso" if success_status else "Nenhum like foi enviado",
