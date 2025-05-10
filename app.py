@@ -12,25 +12,24 @@ import like_count_pb2
 import uid_generator_pb2
 from google.protobuf.message import DecodeError
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
-import threading
 
 app = Flask(__name__)
 
-# Dicionário persistente para armazenar os tempos dos últimos likes (uid -> último like timestamp)
-# Agora usando um lock para thread safety
-last_like_times = defaultdict(dict)
-like_lock = threading.Lock()
-
 def load_tokens(server_name):
     try:
+        # Link direto para o JSON BR
         url = "https://6eb59e55-8444-4bbf-a595-a70c53671ff3-00-3tqutntxcpuq7.spock.replit.dev/token"
+
         response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
+        response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
+
+        tokens = response.json()  # Converte diretamente para dict/list
+        return tokens
+
     except Exception as e:
-        app.logger.error(f"Error loading tokens for server {server_name}: {e}")
+        print(f"Error loading tokens for server {server_name}: {e}")
         return None
 
 def encrypt_message(plaintext):
@@ -97,6 +96,7 @@ async def send_multiple_requests(uid, server_name, url):
             app.logger.error("Failed to load tokens.")
             return None, 0
 
+        # Enviar exatamente 99 requests
         for i in range(100):
             token = tokens[i % len(tokens)]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
@@ -150,6 +150,8 @@ def make_request(encrypt, server_name, token):
         hex_data = response.content.hex()
         binary = bytes.fromhex(hex_data)
         decode = decode_protobuf(binary)
+        if decode is None:
+            app.logger.error("Protobuf decoding returned None.")
         return decode
     except Exception as e:
         app.logger.error(f"Error in make_request: {e}")
@@ -167,32 +169,6 @@ def decode_protobuf(binary):
         app.logger.error(f"Unexpected error during protobuf decoding: {e}")
         return None
 
-def can_send_likes(uid, server_name):
-    """Verifica se o usuário pode enviar likes novamente com thread safety"""
-    with like_lock:
-        if uid not in last_like_times or server_name not in last_like_times[uid]:
-            return True
-
-        last_time = last_like_times[uid][server_name]
-        time_passed = datetime.now() - last_time
-        return time_passed >= timedelta(hours=24)
-
-def get_remaining_time(uid, server_name):
-    """Retorna o tempo restante até poder enviar likes novamente com thread safety"""
-    with like_lock:
-        if uid not in last_like_times or server_name not in last_like_times[uid]:
-            return timedelta(0)
-
-        last_time = last_like_times[uid][server_name]
-        next_available = last_time + timedelta(hours=24)
-        remaining = next_available - datetime.now()
-        return remaining if remaining > timedelta(0) else timedelta(0)
-
-def update_last_like_time(uid, server_name):
-    """Atualiza o tempo do último like com thread safety"""
-    with like_lock:
-        last_like_times[uid][server_name] = datetime.now()
-
 @app.route('/like', methods=['GET'])
 def handle_requests():
     uid = request.args.get("uid")
@@ -204,20 +180,6 @@ def handle_requests():
         }), 400
 
     try:
-        # Verificar se pode enviar likes
-        if not can_send_likes(uid, server_name):
-            remaining = get_remaining_time(uid, server_name)
-            hours, remainder = divmod(remaining.seconds, 3600)
-            minutes = remainder // 60
-            return jsonify({
-                "success": False,
-                "error": f"Você só pode enviar likes novamente após 24 horas. Tempo restante: {hours}h {minutes}m",
-                "remaining_time": {
-                    "hours": hours,
-                    "minutes": minutes
-                }
-            }), 429
-
         start_time = time.time()
         tokens = load_tokens(server_name)
         if tokens is None:
@@ -259,9 +221,6 @@ def handle_requests():
         # Send exactly 99 like requests
         results, execution_time = asyncio.run(send_multiple_requests(uid, server_name, url))
 
-        # Atualizar o momento em que os likes foram enviados (com thread safety)
-        update_last_like_time(uid, server_name)
-
         # Get player info after sending likes
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
@@ -276,15 +235,10 @@ def handle_requests():
         after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
         total_likes_sent = after_like - before_like
 
-        # Calcular o tempo restante até poder enviar likes novamente
-        remaining_time = get_remaining_time(uid, server_name)
-        hours, remainder = divmod(remaining_time.seconds, 3600)
-        minutes = remainder // 60
-
         # Determine if likes were sent successfully
         success_status = total_likes_sent > 0
 
-        # Prepare the response
+        # Prepare the response in the requested format
         response = {
             "success": success_status,
             "message": f"{total_likes_sent} likes adicionado com sucesso" if success_status else "Nenhum like foi enviado",
@@ -294,10 +248,7 @@ def handle_requests():
             "Before Like": str(before_like),
             "Likes After": str(after_like),
             "Total likes sent": total_likes_sent,
-            "Total Estimated Time": f"{hours} horas e {minutes} minutos",
-            "Reusable": "Voce pode enviar curtidas novamente apos 24 horas para este UID.",
-            "Time Takes": f"{execution_time:.2f} seconds",
-            "last_like_time": last_like_times[uid][server_name].isoformat()
+            "Time Takes": f"{execution_time:.2f} seconds"
         }
 
         return jsonify(response)
