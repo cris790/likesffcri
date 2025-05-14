@@ -25,8 +25,15 @@ def load_tokens(server_name):
         response = requests.get(url)
         response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
 
-        tokens = response.json()  # Converte diretamente para dict/list
-        return tokens
+        tokens_data = response.json()  # Converte diretamente para dict/list
+        
+        # Filter only objects that have a 'token' key
+        valid_tokens = [item for item in tokens_data if 'token' in item]
+        
+        if not valid_tokens:
+            raise Exception("No valid tokens found in the response")
+            
+        return valid_tokens
 
     except Exception as e:
         print(f"Error loading tokens for server {server_name}: {e}")
