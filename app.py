@@ -16,18 +16,14 @@ app = Flask(__name__)
 
 def load_tokens(server_name):
     try:
-        url = "https://tokensff.vercel.app/token"
+        # Link direto para o JSON BR
+        url = "https://seulink.com/token_br.json"
+        
         response = requests.get(url)
-        response.raise_for_status()
-
-        all_entries = response.json()
-        # Filtrar apenas os que têm a chave "token"
-        valid_tokens = [entry for entry in all_entries if "token" in entry]
-
-        if not valid_tokens:
-            raise Exception("No valid tokens found.")
-
-        return valid_tokens
+        response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
+        
+        tokens = response.json()  # Converte diretamente para dict/list
+        return tokens
 
     except Exception as e:
         print(f"Error loading tokens for server {server_name}: {e}")
@@ -181,6 +177,7 @@ def handle_requests():
             if encrypted_uid is None:
                 raise Exception("Encryption of UID failed.")
 
+            # الحصول على بيانات اللاعب قبل تنفيذ عملية الإعجاب
             before = make_request(encrypted_uid, server_name, token)
             if before is None:
                 raise Exception("Failed to retrieve initial player info.")
@@ -196,6 +193,7 @@ def handle_requests():
                 before_like = 0
             app.logger.info(f"Likes before command: {before_like}")
 
+            # تحديد رابط الإعجاب حسب اسم السيرفر
             if server_name == "IND":
                 url = "https://client.ind.freefiremobile.com/LikeProfile"
             elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -203,8 +201,10 @@ def handle_requests():
             else:
                 url = "https://clientbp.ggblueshark.com/LikeProfile"
 
+            # إرسال الطلبات بشكل غير متزامن
             asyncio.run(send_multiple_requests(uid, server_name, url))
 
+            # الحصول على بيانات اللاعب بعد تنفيذ عملية الإعجاب
             after = make_request(encrypted_uid, server_name, token)
             if after is None:
                 raise Exception("Failed to retrieve player info after like requests.")
