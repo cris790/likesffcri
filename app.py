@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import asyncio
+import time
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from google.protobuf.json_format import MessageToJson
@@ -11,30 +12,19 @@ import like_pb2
 import like_count_pb2
 import uid_generator_pb2
 from google.protobuf.message import DecodeError
-import time
-from datetime import datetime
-from collections import defaultdict
 
 app = Flask(__name__)
 
 def load_tokens(server_name):
     try:
-        # Link direto para o JSON BR
         url = "https://tokensff.vercel.app/token"
-
         response = requests.get(url)
-        response.raise_for_status()  # Vai dar erro se a resposta não for 200 OK
-
-        tokens_data = response.json()  # Converte diretamente para dict/list
-        
-        # Filter only objects that have a 'token' key
+        response.raise_for_status()
+        tokens_data = response.json()
         valid_tokens = [item for item in tokens_data if 'token' in item]
-        
         if not valid_tokens:
             raise Exception("No valid tokens found in the response")
-            
         return valid_tokens
-
     except Exception as e:
         print(f"Error loading tokens for server {server_name}: {e}")
         return None
@@ -87,34 +77,30 @@ async def send_request(encrypted_uid, token, url):
 
 async def send_multiple_requests(uid, server_name, url):
     try:
-        start_time = time.time()
         region = server_name
         protobuf_message = create_protobuf_message(uid, region)
         if protobuf_message is None:
             app.logger.error("Failed to create protobuf message.")
-            return None, 0
+            return None, None
         encrypted_uid = encrypt_message(protobuf_message)
         if encrypted_uid is None:
             app.logger.error("Encryption failed.")
-            return None, 0
+            return None, None
         tasks = []
         tokens = load_tokens(server_name)
         if tokens is None:
             app.logger.error("Failed to load tokens.")
-            return None, 0
+            return None, None
 
-        # Enviar exatamente 99 requests
         for i in range(100):
             token = tokens[i % len(tokens)]["token"]
             tasks.append(send_request(encrypted_uid, token, url))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        end_time = time.time()
-        execution_time = end_time - start_time
-        return results, execution_time
+        return results, None
     except Exception as e:
         app.logger.error(f"Exception in send_multiple_requests: {e}")
-        return None, 0
+        return None, None
 
 def create_protobuf(uid):
     try:
@@ -178,6 +164,8 @@ def decode_protobuf(binary):
 
 @app.route('/like', methods=['GET'])
 def handle_requests():
+    start_time = time.time()
+
     uid = request.args.get("uid")
     server_name = request.args.get("server_name", "").upper()
     if not uid or not server_name:
@@ -187,7 +175,6 @@ def handle_requests():
         }), 400
 
     try:
-        start_time = time.time()
         tokens = load_tokens(server_name)
         if tokens is None:
             raise Exception("Failed to load tokens.")
@@ -197,16 +184,11 @@ def handle_requests():
         if encrypted_uid is None:
             raise Exception("Encryption of UID failed.")
 
-        # Get player info before sending likes
         before = make_request(encrypted_uid, server_name, token)
         if before is None:
             raise Exception("Failed to retrieve initial player info.")
 
-        try:
-            jsone = MessageToJson(before)
-        except Exception as e:
-            raise Exception(f"Error converting 'before' protobuf to JSON: {e}")
-
+        jsone = MessageToJson(before)
         data_before = json.loads(jsone)
         before_like = data_before.get('AccountInfo', {}).get('Likes', 0)
         player_name = data_before.get('AccountInfo', {}).get('PlayerNickname', 'Unknown')
@@ -217,7 +199,6 @@ def handle_requests():
         except Exception:
             before_like = 0
 
-        # Determine the like endpoint based on server
         if server_name == "IND":
             url = "https://client.ind.freefiremobile.com/LikeProfile"
         elif server_name in {"BR", "US", "SAC", "NA"}:
@@ -225,27 +206,20 @@ def handle_requests():
         else:
             url = "https://clientbp.ggblueshark.com/LikeProfile"
 
-        # Send exactly 99 like requests
-        results, execution_time = asyncio.run(send_multiple_requests(uid, server_name, url))
+        results, _ = asyncio.run(send_multiple_requests(uid, server_name, url))
 
-        # Get player info after sending likes
         after = make_request(encrypted_uid, server_name, token)
         if after is None:
             raise Exception("Failed to retrieve player info after like requests.")
 
-        try:
-            jsone_after = MessageToJson(after)
-        except Exception as e:
-            raise Exception(f"Error converting 'after' protobuf to JSON: {e}")
-
+        jsone_after = MessageToJson(after)
         data_after = json.loads(jsone_after)
         after_like = int(data_after.get('AccountInfo', {}).get('Likes', 0))
         total_likes_sent = after_like - before_like
-
-        # Determine if likes were sent successfully
         success_status = total_likes_sent > 0
 
-        # Prepare the response in the requested format
+        elapsed_time = time.time() - start_time
+
         response = {
             "success": success_status,
             "message": f"{total_likes_sent} likes adicionado com sucesso" if success_status else "Nenhum like foi enviado",
@@ -255,7 +229,7 @@ def handle_requests():
             "Before Like": str(before_like),
             "Likes After": str(after_like),
             "Total likes sent": total_likes_sent,
-            "Time Takes": f"{execution_time:.2f} seconds"
+            "Time Takes": f"{elapsed_time:.2f} segundos"
         }
 
         return jsonify(response)
